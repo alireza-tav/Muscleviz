@@ -10,11 +10,18 @@ import {
   buildRealisticAnatomyRig,
   applyExerciseKinematics,
   resetAnatomyPose,
+  highlightRigMuscles,
 } from './AnatomyModel';
+import {
+  RealAnatomyData,
+  loadRealAnatomicalModel,
+  highlightRealAnatomyMuscles,
+  matchAnatomicalNameToId,
+} from './RealAnatomyModel';
 import { evaluateCurve, getMuscleInvolvementColor } from '../../utils/curveUtils';
 import { Exercise } from '../../types/exercise';
 import { MUSCLE_GROUPS } from '../../data/musclesData';
-import { RotateCw, ZoomIn, ZoomOut, RefreshCw } from 'lucide-react';
+import { RotateCw, ZoomIn, ZoomOut, RefreshCw, Loader2, Sparkles } from 'lucide-react';
 
 interface AnatomyCanvasProps {
   selectedMuscleId: string | null;
@@ -48,12 +55,24 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const rigRef = useRef<AnatomicalRig | null>(null);
+  const realAnatomyRef = useRef<RealAnatomyData | null>(null);
+
+  // Keep references to latest props for async callbacks
+  const selectedMuscleIdRef = useRef<string | null>(selectedMuscleId);
+  selectedMuscleIdRef.current = selectedMuscleId;
+
+  const isolationModeRef = useRef<boolean>(isolationMode);
+  isolationModeRef.current = isolationMode;
+
+  const [loadingProgress, setLoadingProgress] = useState<number | null>(0);
+  const [modelType, setModelType] = useState<'real_anatomy' | 'rig'>('rig');
+  const [loadedModelVersion, setLoadedModelVersion] = useState<number>(0);
 
   const orbitState = useRef({
     radius: 3.2,
     theta: 0,
     phi: Math.PI / 2,
-    target: new THREE.Vector3(0, 1.05, 0),
+    target: new THREE.Vector3(0, 1.0, 0),
     isDragging: false,
     dragStartX: 0,
     dragStartY: 0,
@@ -68,7 +87,7 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
   const [hoveredMuscleName, setHoveredMuscleName] = useState<string | null>(null);
   const [webglError, setWebglError] = useState(false);
 
-  // Initialize Scene, Lighting, Floor Grid & High-Detail Sculpted Rig
+  // Initialize Scene, Lighting & Models
   useEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
@@ -87,11 +106,11 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
 
       // 2. Camera
       const camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 20);
-      camera.position.set(0, 1.15, 3.2);
-      camera.lookAt(0, 1.05, 0);
+      camera.position.set(0, 1.1, 3.2);
+      camera.lookAt(0, 1.0, 0);
       cameraRef.current = camera;
 
-      // 3. Renderer with high shadow precision
+      // 3. Renderer
       const renderer = new THREE.WebGLRenderer({
         canvas,
         antialias: true,
@@ -103,15 +122,14 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.15;
+      renderer.toneMappingExposure = 1.2;
       rendererRef.current = renderer;
 
       // 4. Studio Lighting Rig
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.95);
       scene.add(ambientLight);
 
-      // Key light: sculpted frontal highlight
-      const keyLight = new THREE.DirectionalLight(0xfff6ed, 1.6);
+      const keyLight = new THREE.DirectionalLight(0xfff6ed, 1.8);
       keyLight.position.set(2.5, 4.5, 3.5);
       keyLight.castShadow = true;
       keyLight.shadow.mapSize.width = 1024;
@@ -119,21 +137,19 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
       keyLight.shadow.bias = -0.0005;
       scene.add(keyLight);
 
-      // Fill light: soft cool cyan tone from side
-      const fillLight = new THREE.DirectionalLight(0xb4e1ff, 0.9);
+      const fillLight = new THREE.DirectionalLight(0xb4e1ff, 1.0);
       fillLight.position.set(-3, 2.5, 2.5);
       scene.add(fillLight);
 
-      // Dramatic Rim Light for athletic muscle cuts
-      const rimLight = new THREE.DirectionalLight(0xa3e635, 1.2);
+      const rimLight = new THREE.DirectionalLight(0xb4f000, 1.2);
       rimLight.position.set(0, 3.5, -3.5);
       scene.add(rimLight);
 
-      const bounceLight = new THREE.DirectionalLight(0x272b35, 0.5);
+      const bounceLight = new THREE.DirectionalLight(0x272b35, 0.6);
       bounceLight.position.set(0, -2, 1);
       scene.add(bounceLight);
 
-      // Pedestal Contact Shadow Plane
+      // Contact Shadow Plane
       const shadowGeo = new THREE.PlaneGeometry(3.0, 3.0);
       const shadowMat = new THREE.ShadowMaterial({ opacity: 0.45 });
       const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
@@ -153,12 +169,41 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
       const stageRing = new THREE.Mesh(stageGeo, stageMat);
       stageRing.rotation.x = -Math.PI / 2;
       stageRing.position.y = 0.02;
+      stageRing.receiveShadow = true;
       scene.add(stageRing);
 
-      // 5. Build Rig
+      // 5. Build Kinematic Rig (Used for exercise movements and instant fallback)
       const rig = buildRealisticAnatomyRig();
       scene.add(rig.rootGroup);
       rigRef.current = rig;
+
+      // Apply initial selection on rig
+      highlightRigMuscles(rig, selectedMuscleIdRef.current, isolationModeRef.current);
+
+      // 6. Asynchronously Load Real High-Detail Anatomical Model (GLB)
+      loadRealAnatomicalModel((percent) => {
+        setLoadingProgress(percent);
+      })
+        .then((realData) => {
+          realAnatomyRef.current = realData;
+          scene.add(realData.group);
+          setLoadingProgress(null);
+
+          // If in explore mode, switch to real anatomical model and apply highlighting
+          if (!activeExercise) {
+            rig.rootGroup.visible = false;
+            realData.group.visible = true;
+            highlightRealAnatomyMuscles(realData, selectedMuscleIdRef.current, isolationModeRef.current);
+            setModelType('real_anatomy');
+          }
+          setLoadedModelVersion((v) => v + 1);
+        })
+        .catch((err) => {
+          console.warn('Real anatomy model load failed, falling back to rig:', err);
+          setLoadingProgress(null);
+          rig.rootGroup.visible = true;
+          setModelType('rig');
+        });
 
       // Handle Resize
       const handleResize = () => {
@@ -193,9 +238,32 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
         camera.position.z = s.target.z + s.radius * sinPhi * cosTheta;
         camera.lookAt(s.target);
 
-        // Gentle floating spin for the orbit guide ring
         if (rig.props.orbitRing) {
           rig.props.orbitRing.rotation.y += 0.008;
+        }
+
+        // Selected muscle breathing glow pulse in Explore Mode
+        const curSelectedId = selectedMuscleIdRef.current;
+        if (!activeExercise && curSelectedId) {
+          const pulseIntensity = 1.35 + Math.sin(Date.now() * 0.006) * 0.35;
+          const real = realAnatomyRef.current;
+          if (real && real.group.visible) {
+            const meshes = real.muscleIdToMeshes.get(curSelectedId);
+            if (meshes) {
+              for (const m of meshes) {
+                const mat = real.materialsMap.get(m);
+                if (mat) mat.emissiveIntensity = pulseIntensity;
+              }
+            }
+          }
+          if (rig && rig.rootGroup.visible) {
+            rig.muscleMeshes.forEach((mesh) => {
+              if (mesh.userData.muscleId === curSelectedId) {
+                const mat = mesh.material as THREE.MeshStandardMaterial;
+                mat.emissiveIntensity = pulseIntensity;
+              }
+            });
+          }
         }
 
         renderer.render(scene, camera);
@@ -233,93 +301,77 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     }
   }, [viewPreset]);
 
-  // Synchronize Pose & Muscle Heatmaps
+  // Synchronize Pose, Muscle Highlighting & Heatmap
   useEffect(() => {
     const rig = rigRef.current;
-    if (!rig) return;
+    const real = realAnatomyRef.current;
 
     if (activeExercise) {
-      // 1. Move skeleton kinematics
-      applyExerciseKinematics(rig, activeExercise.id, playbackProgress);
+      // In Exercise Demonstration: use Kinematic Rig with props and animated joints
+      if (rig) {
+        rig.rootGroup.visible = true;
+        rig.props.orbitRing.visible = false;
+        applyExerciseKinematics(rig, activeExercise.id, playbackProgress);
 
-      // Hide orbit ring during exercise animation
-      rig.props.orbitRing.visible = false;
+        const involvementMap = new Map<string, number>();
+        if (activeExercise.involvementCurves) {
+          activeExercise.involvementCurves.forEach((curve) => {
+            const val = evaluateCurve(curve.keyframes, playbackProgress);
+            involvementMap.set(curve.muscleId, val);
+          });
+        }
 
-      // 2. Compute muscle involvement levels
-      const involvementMap = new Map<string, number>();
-      if (activeExercise.involvementCurves) {
-        activeExercise.involvementCurves.forEach((curve) => {
-          const val = evaluateCurve(curve.keyframes, playbackProgress);
-          involvementMap.set(curve.muscleId, val);
+        rig.muscleMeshes.forEach((mesh) => {
+          const muscleId = mesh.userData.muscleId as string;
+          const intensity = involvementMap.get(muscleId) || 0;
+          const mat = mesh.material as THREE.MeshStandardMaterial;
+
+          if (intensity > 0.05) {
+            const { color, emissive, emissiveIntensity } = getMuscleInvolvementColor(
+              intensity,
+              isColorblind
+            );
+            mat.color.copy(color);
+            mat.emissive.copy(emissive);
+            mat.emissiveIntensity = emissiveIntensity * 1.25;
+            mat.opacity = 1.0;
+            mat.transparent = false;
+          } else {
+            if (isolationMode) {
+              mat.color.setHex(0x181a20);
+              mat.emissive.setHex(0x000000);
+              mat.emissiveIntensity = 0;
+              mat.opacity = 0.15;
+              mat.transparent = true;
+            } else {
+              mat.color.setHex(0x353842);
+              mat.emissive.setHex(0x000000);
+              mat.emissiveIntensity = 0;
+              mat.opacity = 1.0;
+              mat.transparent = false;
+            }
+          }
         });
       }
 
-      rig.muscleMeshes.forEach((mesh) => {
-        const muscleId = mesh.userData.muscleId as string;
-        const intensity = involvementMap.get(muscleId) || 0;
-        const mat = mesh.material as THREE.MeshStandardMaterial;
-
-        if (intensity > 0.05) {
-          const { color, emissive, emissiveIntensity } = getMuscleInvolvementColor(
-            intensity,
-            isColorblind
-          );
-          mat.color.copy(color);
-          mat.emissive.copy(emissive);
-          mat.emissiveIntensity = emissiveIntensity * 1.2;
-          mat.opacity = 1.0;
-          mat.transparent = false;
-        } else {
-          if (isolationMode) {
-            mat.color.setHex(0x1e2025);
-            mat.emissive.setHex(0x000000);
-            mat.emissiveIntensity = 0;
-            mat.opacity = 0.2;
-            mat.transparent = true;
-          } else {
-            mat.color.setHex(0x353842);
-            mat.emissive.setHex(0x000000);
-            mat.emissiveIntensity = 0;
-            mat.opacity = 1.0;
-            mat.transparent = false;
-          }
-        }
-      });
+      if (real) {
+        real.group.visible = false;
+      }
     } else {
-      // Free Exploration Mode
-      resetAnatomyPose(rig);
-      rig.props.orbitRing.visible = true;
-
-      rig.muscleMeshes.forEach((mesh) => {
-        const muscleId = mesh.userData.muscleId as string;
-        const isSelected = selectedMuscleId === muscleId;
-        const mat = mesh.material as THREE.MeshStandardMaterial;
-
-        if (isSelected) {
-          // Warm crimson highlight with glowing rim for selected muscle
-          mat.color.setHex(0xef4444);
-          mat.emissive.setHex(0xdc2626);
-          mat.emissiveIntensity = 0.95;
-          mat.opacity = 1.0;
-          mat.transparent = false;
-        } else {
-          if (isolationMode && selectedMuscleId) {
-            mat.color.setHex(0x1e2025);
-            mat.emissive.setHex(0x000000);
-            mat.emissiveIntensity = 0;
-            mat.opacity = 0.18;
-            mat.transparent = true;
-          } else {
-            mat.color.setHex(0x3e424c);
-            mat.emissive.setHex(0x000000);
-            mat.emissiveIntensity = 0;
-            mat.opacity = 1.0;
-            mat.transparent = false;
-          }
-        }
-      });
+      // In Explore Mode: prioritize the Real Anatomical 3D Model!
+      if (real) {
+        real.group.visible = true;
+        if (rig) rig.rootGroup.visible = false;
+        highlightRealAnatomyMuscles(real, selectedMuscleId, isolationMode);
+      } else if (rig) {
+        // Fallback to procedural rig while real model loads
+        rig.rootGroup.visible = true;
+        rig.props.orbitRing.visible = true;
+        resetAnatomyPose(rig);
+        highlightRigMuscles(rig, selectedMuscleId, isolationMode);
+      }
     }
-  }, [activeExercise, playbackProgress, selectedMuscleId, isolationMode, isColorblind]);
+  }, [activeExercise, playbackProgress, selectedMuscleId, isolationMode, isColorblind, modelType, loadedModelVersion]);
 
   // Pointer & Raycast Interactions
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -368,11 +420,38 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     }
   };
 
+  const findMuscleIdFromObject = (
+    hitObj: THREE.Object3D,
+    real: RealAnatomyData | null,
+    rig: AnatomicalRig | null
+  ): string | null => {
+    if (real && real.group.visible) {
+      let curr: THREE.Object3D | null = hitObj;
+      while (curr && curr !== real.group) {
+        if (real.meshToMuscleId.has(curr as THREE.Mesh)) {
+          const mid = real.meshToMuscleId.get(curr as THREE.Mesh);
+          if (mid && mid !== 'other') return mid;
+        }
+        const matched = matchAnatomicalNameToId(curr.name);
+        if (matched) return matched;
+        curr = curr.parent;
+      }
+    } else if (rig && rig.rootGroup.visible) {
+      let curr: THREE.Object3D | null = hitObj;
+      while (curr && curr !== rig.rootGroup) {
+        if (curr.userData && curr.userData.muscleId) {
+          return curr.userData.muscleId;
+        }
+        curr = curr.parent;
+      }
+    }
+    return null;
+  };
+
   const handleRaycastSelect = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     const camera = cameraRef.current;
-    const rig = rigRef.current;
-    if (!canvas || !camera || !rig) return;
+    if (!canvas || !camera) return;
 
     const rect = canvas.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -381,13 +460,32 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
 
-    const meshes = Array.from(rig.muscleMeshes.values());
-    const intersects = raycaster.intersectObjects(meshes, false);
+    const real = realAnatomyRef.current;
+    const rig = rigRef.current;
 
-    if (intersects.length > 0) {
-      const hitMesh = intersects[0].object as THREE.Mesh;
-      if (hitMesh.userData && hitMesh.userData.muscleId) {
-        onSelectMuscle(hitMesh.userData.muscleId);
+    let targetObjects: THREE.Object3D[] = [];
+    if (real && real.group.visible) {
+      targetObjects = real.group.children;
+    } else if (rig && rig.rootGroup.visible) {
+      targetObjects = rig.rootGroup.children;
+    }
+
+    if (targetObjects.length > 0) {
+      const intersects = raycaster.intersectObjects(targetObjects, true);
+      for (const inter of intersects) {
+        const foundMuscleId = findMuscleIdFromObject(inter.object, real, rig);
+        if (foundMuscleId) {
+          onSelectMuscle(foundMuscleId);
+          // Haptic feedback if available
+          if ('vibrate' in navigator) {
+            try {
+              navigator.vibrate(20);
+            } catch {
+              // ignore
+            }
+          }
+          return;
+        }
       }
     }
   };
@@ -395,8 +493,7 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
   const handleRaycastHover = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     const camera = cameraRef.current;
-    const rig = rigRef.current;
-    if (!canvas || !camera || !rig) return;
+    if (!canvas || !camera) return;
 
     const rect = canvas.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -405,16 +502,26 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
 
-    const meshes = Array.from(rig.muscleMeshes.values());
-    const intersects = raycaster.intersectObjects(meshes, false);
+    const real = realAnatomyRef.current;
+    const rig = rigRef.current;
 
-    if (intersects.length > 0) {
-      const hitMesh = intersects[0].object as THREE.Mesh;
-      if (hitMesh.userData && hitMesh.userData.muscleId) {
-        const found = MUSCLE_GROUPS.find((m) => m.id === hitMesh.userData.muscleId);
-        setHoveredMuscleName(found ? found.name : hitMesh.userData.muscleId);
-        canvas.style.cursor = 'pointer';
-        return;
+    let targetObjects: THREE.Object3D[] = [];
+    if (real && real.group.visible) {
+      targetObjects = real.group.children;
+    } else if (rig && rig.rootGroup.visible) {
+      targetObjects = rig.rootGroup.children;
+    }
+
+    if (targetObjects.length > 0) {
+      const intersects = raycaster.intersectObjects(targetObjects, true);
+      for (const inter of intersects) {
+        const foundMuscleId = findMuscleIdFromObject(inter.object, real, rig);
+        if (foundMuscleId) {
+          const found = MUSCLE_GROUPS.find((m) => m.id === foundMuscleId);
+          setHoveredMuscleName(found ? found.name : foundMuscleId);
+          canvas.style.cursor = 'pointer';
+          return;
+        }
       }
     }
 
@@ -441,11 +548,20 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     s.targetTheta += Math.PI / 2;
   };
 
+  const activeSelectedGroup = MUSCLE_GROUPS.find((m) => m.id === selectedMuscleId);
+
   return (
     <div
       ref={containerRef}
       className={`relative w-full h-full flex items-center justify-center overflow-hidden touch-none select-none ${className}`}
     >
+      {loadingProgress !== null && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 px-3.5 py-1.5 rounded-full bg-[#161822]/90 backdrop-blur-md border border-[#b4f000]/30 text-xs font-bold text-[#b4f000] flex items-center gap-2 shadow-xl">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          <span>بارگذاری آناتومی واقعی انسان ({loadingProgress}٪)...</span>
+        </div>
+      )}
+
       {webglError ? (
         <div className="text-center p-6 text-slate-400">
           <p className="text-sm font-medium">موتور سه‌بعدی در دسترس نیست</p>
@@ -507,15 +623,32 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
         <div className="absolute left-4 top-1/2 -translate-y-1/2 flex items-center gap-2 pointer-events-none opacity-80">
           <div className="w-2 h-2 rounded-full bg-[#b4f000] animate-ping" />
           <span className="text-[11px] font-bold text-slate-400 font-sans tracking-wide">
-            بکشید برای چرخش
+            بکشید برای چرخش ۳D
+          </span>
+        </div>
+      )}
+
+      {/* Selected Muscle Badge Indicator on 3D Canvas */}
+      {!activeExercise && activeSelectedGroup && (
+        <div className="absolute top-2 left-4 z-10 pointer-events-none flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#14161f]/85 backdrop-blur-md border border-[#ef4444]/40 shadow-lg">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#ef4444] opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#ef4444]"></span>
+          </span>
+          <span className="text-[11px] font-bold text-white">
+            {activeSelectedGroup.name}
+          </span>
+          <span className="text-[9px] text-slate-400 font-mono">
+            {activeSelectedGroup.latinName}
           </span>
         </div>
       )}
 
       {/* Hover Muscle Tag */}
       {hoveredMuscleName && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none px-4 py-1.5 rounded-full bg-[#12141a]/90 backdrop-blur-md border border-white/15 text-xs font-bold text-[#b4f000] shadow-2xl">
-          {hoveredMuscleName}
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none px-4 py-1.5 rounded-full bg-[#12141a]/90 backdrop-blur-md border border-[#b4f000]/40 text-xs font-bold text-[#b4f000] shadow-2xl flex items-center gap-2 animate-in fade-in duration-150">
+          <Sparkles className="w-3 h-3 text-[#b4f000]" />
+          <span>{hoveredMuscleName}</span>
         </div>
       )}
     </div>

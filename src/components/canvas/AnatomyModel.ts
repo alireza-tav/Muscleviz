@@ -1062,3 +1062,43 @@ export function applyExerciseKinematics(
       break;
   }
 }
+
+/**
+ * Highlights muscles on the procedural rig model with luminous glowing red for selection.
+ */
+export function highlightRigMuscles(
+  rig: AnatomicalRig,
+  selectedMuscleId: string | null,
+  isolationMode: boolean
+) {
+  rig.muscleMeshes.forEach((mesh) => {
+    const muscleId = mesh.userData.muscleId as string;
+    const isSelected = !!(selectedMuscleId && muscleId === selectedMuscleId);
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+
+    if (isSelected) {
+      // High-visibility glowing crimson red
+      mat.color.setHex(0xff1744);
+      mat.emissive.setHex(0xdd002f);
+      mat.emissiveIntensity = 1.35;
+      mat.roughness = 0.25;
+      mat.opacity = 1.0;
+      mat.transparent = false;
+    } else {
+      if (isolationMode && selectedMuscleId) {
+        mat.color.setHex(0x181a22);
+        mat.emissive.setHex(0x000000);
+        mat.emissiveIntensity = 0;
+        mat.opacity = 0.15;
+        mat.transparent = true;
+      } else {
+        mat.color.setHex(0x3e4350);
+        mat.emissive.setHex(0x000000);
+        mat.emissiveIntensity = 0;
+        mat.roughness = 0.45;
+        mat.opacity = 1.0;
+        mat.transparent = false;
+      }
+    }
+  });
+}

@@ -70,6 +70,20 @@ export default function App() {
     );
   };
 
+  const handleSelectMuscle = (muscleId: string | null) => {
+    setSelectedMuscleId(muscleId);
+    if (muscleId) {
+      const group = MUSCLE_GROUPS.find((m) => m.id === muscleId);
+      if (group) {
+        if (group.side === 'back' && viewPreset !== 'back') {
+          setViewPreset('back');
+        } else if (group.side === 'front' && viewPreset !== 'front') {
+          setViewPreset('front');
+        }
+      }
+    }
+  };
+
   const selectedMuscle: MuscleGroupData | null = useMemo(() => {
     return selectedMuscleId ? MUSCLE_GROUPS.find((m) => m.id === selectedMuscleId) || null : null;
   }, [selectedMuscleId]);
@@ -243,11 +257,36 @@ export default function App() {
               </button>
             </div>
 
+            {/* Quick Muscle Selector Horizontal Carousel */}
+            <div className="absolute top-14 left-0 right-0 z-20 px-4 overflow-x-auto no-scrollbar pointer-events-auto flex items-center gap-1.5 py-1">
+              {MUSCLE_GROUPS.map((mg) => {
+                const isSel = selectedMuscleId === mg.id;
+                return (
+                  <button
+                    key={mg.id}
+                    onClick={() => handleSelectMuscle(mg.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 border shadow-md active:scale-95 ${
+                      isSel
+                        ? 'bg-[#ef4444] text-white border-[#ef4444] shadow-[0_0_12px_rgba(239,68,68,0.5)] scale-[1.02]'
+                        : 'bg-[#14161f]/90 text-slate-300 border-white/10 hover:text-white hover:bg-white/10'
+                    }`}
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        isSel ? 'bg-white animate-ping' : 'bg-[#ef4444]'
+                      }`}
+                    />
+                    <span>{mg.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+
             {/* 3D Anatomical Body Viewport */}
             <div className="flex-1 w-full h-[calc(100vh-170px)] min-h-[460px] relative">
               <AnatomyCanvas
                 selectedMuscleId={selectedMuscleId}
-                onSelectMuscle={(id) => setSelectedMuscleId(id)}
+                onSelectMuscle={handleSelectMuscle}
                 activeExercise={null}
                 isColorblind={isColorblind}
                 isolationMode={isolationMode}
