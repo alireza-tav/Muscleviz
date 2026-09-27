@@ -1,0 +1,6 @@
+{
+  "name": "Muscle Atlas - 3D Anatomy & Movement Dynamics",
+  "description": "Interactive 3D human anatomy, keyframed exercise animations, synchronized muscle involvement heatmaps, and coaching workout planner.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
