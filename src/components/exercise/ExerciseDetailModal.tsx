@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { Exercise } from '../../types/exercise';
 import { AnatomyCanvas } from '../canvas/AnatomyCanvas';
+import { MUSCLE_GROUPS } from '../../data/musclesData';
 import {
   ArrowRight,
   Bookmark,
@@ -46,8 +47,13 @@ export const ExerciseDetailModal: React.FC<ExerciseDetailModalProps> = ({
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
   const [isolationMode, setIsolationMode] = useState(false);
   const [selectedMuscleId, setSelectedMuscleId] = useState<string | null>(
-    exercise.targetMuscles[0]?.muscleId || 'chest'
+    exercise.targetMuscles[0]?.muscleId || null
   );
+
+  const primaryMuscle = exercise.targetMuscles.find((m) => m.role === 'primary');
+  const primaryGroup = primaryMuscle ? MUSCLE_GROUPS.find((mg) => mg.id === primaryMuscle.muscleId) : null;
+  const initialPreset: 'front' | 'back' = primaryGroup?.side === 'back' ? 'back' : 'front';
+  const [viewPreset, setViewPreset] = useState<'front' | 'back' | 'left' | 'right'>(initialPreset);
 
   // Playback timer loop
   React.useEffect(() => {
@@ -72,7 +78,6 @@ export const ExerciseDetailModal: React.FC<ExerciseDetailModalProps> = ({
       progress * exercise.durationSeconds <= p.endTime
   ) || exercise.phases[0];
 
-  const primaryMuscle = exercise.targetMuscles.find((m) => m.role === 'primary');
   const secondaryMuscles = exercise.targetMuscles.filter((m) => m.role !== 'primary');
 
   return (
@@ -137,15 +142,36 @@ export const ExerciseDetailModal: React.FC<ExerciseDetailModalProps> = ({
           playbackProgress={progress}
           isColorblind={isColorblind}
           isolationMode={isolationMode}
+          viewPreset={viewPreset}
+          onViewPresetChange={setViewPreset}
           showRotateGuide={false}
         />
 
         {/* Floating Quick Controls on 3D viewport */}
-        <div className="absolute left-3 top-3 flex flex-col gap-2 z-10">
+        <div className="absolute left-3 top-3 flex items-center gap-1.5 z-10 pointer-events-auto">
+          <div className="flex items-center p-0.5 bg-black/75 backdrop-blur-md border border-white/10 rounded-xl shadow-lg">
+            <button
+              onClick={() => setViewPreset('front')}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+                viewPreset === 'front' ? 'bg-[#b4f000] text-black shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              روبرو
+            </button>
+            <button
+              onClick={() => setViewPreset('back')}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all ${
+                viewPreset === 'back' ? 'bg-[#b4f000] text-black shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              پشت
+            </button>
+          </div>
+
           <button
             onClick={() => setIsolationMode(!isolationMode)}
             title="حالت تمرکز و ایزوله"
-            className={`p-2 rounded-xl backdrop-blur-md border text-xs font-bold transition-all shadow-lg flex items-center gap-1.5 ${
+            className={`p-1.5 px-2 rounded-xl backdrop-blur-md border text-xs font-bold transition-all shadow-lg flex items-center gap-1 ${
               isolationMode
                 ? 'bg-[#b4f000]/20 text-[#b4f000] border-[#b4f000]/50'
                 : 'bg-black/60 text-slate-300 border-white/10 hover:text-white'
@@ -228,19 +254,56 @@ export const ExerciseDetailModal: React.FC<ExerciseDetailModalProps> = ({
       <div className="p-4 flex flex-col gap-3">
         <div className="bg-[#161822] border border-white/10 rounded-2xl p-3.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#ef4444]/15 border border-[#ef4444]/30 flex items-center justify-center text-[#ef4444]">
+            <div className="w-10 h-10 rounded-xl bg-[#ef4444]/15 border border-[#ef4444]/30 flex items-center justify-center text-[#ef4444] shrink-0">
               <Activity className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="w-2 h-2 rounded-full bg-[#ef4444]" />
                 <span className="text-xs font-bold text-[#b4f000]">عضله هدف اصلی:</span>
-                <span className="text-xs font-bold text-white">{primaryMuscle?.label}</span>
+                {primaryMuscle && (
+                  <button
+                    onClick={() => {
+                      setSelectedMuscleId(primaryMuscle.muscleId);
+                      const mg = MUSCLE_GROUPS.find((g) => g.id === primaryMuscle.muscleId);
+                      if (mg?.side === 'back') setViewPreset('back');
+                      else if (mg?.side === 'front') setViewPreset('front');
+                    }}
+                    className={`text-xs font-bold px-2 py-0.5 rounded-lg border transition-all active:scale-95 ${
+                      selectedMuscleId === primaryMuscle.muscleId
+                        ? 'bg-[#ff1744] text-white border-[#ff1744] shadow-sm'
+                        : 'bg-white/5 text-white border-white/10 hover:bg-white/10'
+                    }`}
+                  >
+                    {primaryMuscle.label}
+                  </button>
+                )}
               </div>
               {secondaryMuscles.length > 0 && (
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  عضلات کمکی: {secondaryMuscles.map((m) => m.label).join('، ')}
-                </p>
+                <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                  <span className="text-[11px] text-slate-400">عضلات کمکی:</span>
+                  {secondaryMuscles.map((m) => {
+                    const isSel = selectedMuscleId === m.muscleId;
+                    return (
+                      <button
+                        key={m.muscleId}
+                        onClick={() => {
+                          setSelectedMuscleId(m.muscleId);
+                          const mg = MUSCLE_GROUPS.find((g) => g.id === m.muscleId);
+                          if (mg?.side === 'back') setViewPreset('back');
+                          else if (mg?.side === 'front') setViewPreset('front');
+                        }}
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border transition-all active:scale-95 ${
+                          isSel
+                            ? 'bg-[#ff1744] text-white border-[#ff1744] shadow-sm'
+                            : 'bg-white/5 text-slate-300 border-white/10 hover:text-white'
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>

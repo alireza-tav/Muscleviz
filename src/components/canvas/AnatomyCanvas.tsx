@@ -16,6 +16,7 @@ import {
   RealAnatomyData,
   loadRealAnatomicalModel,
   highlightRealAnatomyMuscles,
+  applyExerciseHeatmapToRealAnatomy,
   matchAnatomicalNameToId,
 } from './RealAnatomyModel';
 import { evaluateCurve, getMuscleInvolvementColor } from '../../utils/curveUtils';
@@ -82,6 +83,7 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     targetPhi: Math.PI / 2,
     targetRadius: 3.2,
     hasMoved: false,
+    pointerDownTime: 0,
   });
 
   const [hoveredMuscleName, setHoveredMuscleName] = useState<string | null>(null);
@@ -189,12 +191,22 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
           scene.add(realData.group);
           setLoadingProgress(null);
 
-          // If in explore mode, switch to real anatomical model and apply highlighting
-          if (!activeExercise) {
-            rig.rootGroup.visible = false;
-            realData.group.visible = true;
+          // Always prioritize realistic high-detail anatomical model in all modes
+          rig.rootGroup.visible = false;
+          realData.group.visible = true;
+          setModelType('real_anatomy');
+
+          if (activeExercise) {
+            applyExerciseHeatmapToRealAnatomy(
+              realData,
+              activeExercise,
+              playbackProgress,
+              isColorblind,
+              isolationModeRef.current,
+              selectedMuscleIdRef.current
+            );
+          } else {
             highlightRealAnatomyMuscles(realData, selectedMuscleIdRef.current, isolationModeRef.current);
-            setModelType('real_anatomy');
           }
           setLoadedModelVersion((v) => v + 1);
         })
@@ -307,8 +319,20 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     const real = realAnatomyRef.current;
 
     if (activeExercise) {
-      // In Exercise Demonstration: use Kinematic Rig with props and animated joints
-      if (rig) {
+      // In Exercise Demonstration: use the Realistic High-Detail Anatomical 3D Model!
+      if (real) {
+        real.group.visible = true;
+        if (rig) rig.rootGroup.visible = false;
+        applyExerciseHeatmapToRealAnatomy(
+          real,
+          activeExercise,
+          playbackProgress,
+          isColorblind,
+          isolationMode,
+          selectedMuscleId
+        );
+      } else if (rig) {
+        // Fallback only while real anatomical model is downloading
         rig.rootGroup.visible = true;
         rig.props.orbitRing.visible = false;
         applyExerciseKinematics(rig, activeExercise.id, playbackProgress);
@@ -353,21 +377,19 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
           }
         });
       }
-
-      if (real) {
-        real.group.visible = false;
-      }
     } else {
       // In Explore Mode: prioritize the Real Anatomical 3D Model!
       if (real) {
         real.group.visible = true;
         if (rig) rig.rootGroup.visible = false;
         highlightRealAnatomyMuscles(real, selectedMuscleId, isolationMode);
-      } else if (rig) {
-        // Fallback to procedural rig while real model loads
-        rig.rootGroup.visible = true;
-        rig.props.orbitRing.visible = true;
-        resetAnatomyPose(rig);
+      }
+      if (rig) {
+        if (!real) {
+          rig.rootGroup.visible = true;
+          rig.props.orbitRing.visible = true;
+          resetAnatomyPose(rig);
+        }
         highlightRigMuscles(rig, selectedMuscleId, isolationMode);
       }
     }
@@ -385,6 +407,7 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     s.dragStartY = e.clientY;
     s.startTheta = s.targetTheta;
     s.startPhi = s.targetPhi;
+    s.pointerDownTime = Date.now();
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -396,14 +419,14 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
 
     const deltaX = e.clientX - s.dragStartX;
     const deltaY = e.clientY - s.dragStartY;
+    const dist = Math.hypot(deltaX, deltaY);
 
-    if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
+    if (dist > 8) {
       s.hasMoved = true;
+      const rotSpeed = 0.007;
+      s.targetTheta = s.startTheta - deltaX * rotSpeed;
+      s.targetPhi = Math.max(0.1, Math.min(Math.PI - 0.1, s.startPhi - deltaY * rotSpeed));
     }
-
-    const rotSpeed = 0.007;
-    s.targetTheta = s.startTheta - deltaX * rotSpeed;
-    s.targetPhi = Math.max(0.1, Math.min(Math.PI - 0.1, s.startPhi - deltaY * rotSpeed));
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -415,7 +438,13 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
       // ignore
     }
 
-    if (!s.hasMoved) {
+    const deltaX = e.clientX - s.dragStartX;
+    const deltaY = e.clientY - s.dragStartY;
+    const dist = Math.hypot(deltaX, deltaY);
+    const duration = Date.now() - s.pointerDownTime;
+
+    // Fast tap or minimal movement is treated as selection
+    if (!s.hasMoved || dist < 12 || duration < 280) {
       handleRaycastSelect(e);
     }
   };
@@ -428,6 +457,9 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     if (real && real.group.visible) {
       let curr: THREE.Object3D | null = hitObj;
       while (curr && curr !== real.group) {
+        if (curr.userData && curr.userData.muscleId && curr.userData.muscleId !== 'other') {
+          return curr.userData.muscleId;
+        }
         if (real.meshToMuscleId.has(curr as THREE.Mesh)) {
           const mid = real.meshToMuscleId.get(curr as THREE.Mesh);
           if (mid && mid !== 'other') return mid;
@@ -463,11 +495,11 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
     const real = realAnatomyRef.current;
     const rig = rigRef.current;
 
-    let targetObjects: THREE.Object3D[] = [];
+    const targetObjects: THREE.Object3D[] = [];
     if (real && real.group.visible) {
-      targetObjects = real.group.children;
+      targetObjects.push(real.group);
     } else if (rig && rig.rootGroup.visible) {
-      targetObjects = rig.rootGroup.children;
+      targetObjects.push(rig.rootGroup);
     }
 
     if (targetObjects.length > 0) {
@@ -479,7 +511,7 @@ export const AnatomyCanvas: React.FC<AnatomyCanvasProps> = ({
           // Haptic feedback if available
           if ('vibrate' in navigator) {
             try {
-              navigator.vibrate(20);
+              navigator.vibrate(25);
             } catch {
               // ignore
             }

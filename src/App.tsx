@@ -26,8 +26,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('explore');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // 3D Anatomical Explore state
-  const [selectedMuscleId, setSelectedMuscleId] = useState<string | null>('chest');
+  // 3D Anatomical Explore state (starts neutral so all muscles are visible in natural tone)
+  const [selectedMuscleId, setSelectedMuscleId] = useState<string | null>(null);
   const [viewPreset, setViewPreset] = useState<'front' | 'back' | 'left' | 'right'>('front');
   const [isolationMode, setIsolationMode] = useState<boolean>(false);
 
@@ -71,6 +71,11 @@ export default function App() {
   };
 
   const handleSelectMuscle = (muscleId: string | null) => {
+    // If clicking the already selected muscle, toggle off to clean neutral view
+    if (selectedMuscleId === muscleId && muscleId !== null) {
+      setSelectedMuscleId(null);
+      return;
+    }
     setSelectedMuscleId(muscleId);
     if (muscleId) {
       const group = MUSCLE_GROUPS.find((m) => m.id === muscleId);
@@ -267,13 +272,13 @@ export default function App() {
                     onClick={() => handleSelectMuscle(mg.id)}
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 border shadow-md active:scale-95 ${
                       isSel
-                        ? 'bg-[#ef4444] text-white border-[#ef4444] shadow-[0_0_12px_rgba(239,68,68,0.5)] scale-[1.02]'
+                        ? 'bg-[#ff1744] text-white border-[#ff1744] shadow-[0_0_15px_rgba(255,23,68,0.55)] scale-[1.03]'
                         : 'bg-[#14161f]/90 text-slate-300 border-white/10 hover:text-white hover:bg-white/10'
                     }`}
                   >
                     <span
                       className={`w-2 h-2 rounded-full ${
-                        isSel ? 'bg-white animate-ping' : 'bg-[#ef4444]'
+                        isSel ? 'bg-white animate-ping' : 'bg-slate-500'
                       }`}
                     />
                     <span>{mg.name}</span>
